@@ -2,7 +2,7 @@ package ratelimiter
 
 import (
 	"fmt"
-	"strings"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -11,28 +11,24 @@ type Algorithm string
 
 // Current, defined and implemented typesafe list of rate-limiting algorithms
 const ( // Play a sad kazoo 'my heart will go on' for the enums here
-	Permissive              Algorithm = "allow_all"
-	ContinuousSlidingWindow Algorithm = "continuous_sliding_window"
+	Permissive Algorithm = "allow_all"
+	// ContinuousSlidingWindow Algorithm = "continuous_sliding_window" // True continuous sliding window - no bucketing (Higher memory pressure)
+	BucketedSlidingWindow Algorithm = "bucketed_sliding_window" // Less memory pressure: 1-minute buckets (No less than 1-minute fidelity though)
 )
 
-type Constructor func(*redis.Client) RateLimiter
+type Constructor func(client *redis.Client, windowSize time.Duration, defaultLimit int64) RateLimiter
 
 var algorithmConstructors = map[Algorithm]Constructor{
-	Permissive:              NewPermissiveRateLimiter,
-	ContinuousSlidingWindow: NewContinuousSlidingWindowLimiter,
+	Permissive:            NewPermissiveRateLimiter,
+	BucketedSlidingWindow: NewBucketedSlidingWindowLimiter,
 	// TODO - MOAR.
 }
 
-func NewRateLimiter(algName string, redisClient *redis.Client) (RateLimiter, error) {
-	algo := Algorithm(strings.ToLower(strings.TrimSpace(algName)))
-	if algo == "" {
-		algo = Permissive
-	}
-
-	constructor, exists := algorithmConstructors[algo]
+func NewRateLimiter(alg Algorithm, client *redis.Client, windowSize time.Duration, defaultLimit int64) (RateLimiter, error) {
+	constructor, exists := algorithmConstructors[alg]
 	if !exists {
-		return nil, fmt.Errorf("Unknown rate-limiting algorithm %s", algName)
+		return nil, fmt.Errorf("unknown rate-limiting algorithm %s", alg)
 	}
 
-	return constructor(redisClient), nil
+	return constructor(client, windowSize, defaultLimit), nil
 }

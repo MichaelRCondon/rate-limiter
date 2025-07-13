@@ -13,7 +13,7 @@ type PermissiveRateLimiter struct {
 	redisClient *redis.Client
 }
 
-func NewPermissiveRateLimiter(redisClient *redis.Client) RateLimiter {
+func NewPermissiveRateLimiter(redisClient *redis.Client, windowSize time.Duration, defaultLimit int64) RateLimiter {
 	//  Initialize the limiter - we don't actually use the client
 	return &PermissiveRateLimiter{
 		redisClient: redisClient, // So this can be NIL

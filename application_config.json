@@ -1,11 +1,12 @@
 {
-  "backend_url": "http://localhost:3000/api",
+  "backend_url": "http://localhost:9080",
   "default_limit_count": 100,
   "default_period": "1h",
   "mongo_url": "mongodb://username:password@localhost:27017/ratelimiter",
   "redis_config": {
     "redis_url": "localhost:6379", 
-    "redis_db": 0
+    "redis_db": 0,
+    "redis_password": "redis_pass_123"
   },
   "server_config": {
     "port": 8080,

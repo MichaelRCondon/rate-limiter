@@ -4,11 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"strconv"
-
-	// "rate-limiter/types"
 	"os"
+	"rate-limiter/ratelimiter"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -26,13 +25,14 @@ var (
 
 // Container for the full config
 type Config struct {
-	BackendURL        string           `json:"port"`
-	JWTSecret         string           `json:"jwt_secret"`
-	DefaultlimitCount int64            `json:"default_limit_count"` // Sensible, global default limit - unless over-ridden
-	DefaultPeriod     time.Duration    `json:"default_period"`      // And a default time period
-	MongoURL          string           `json:"mongo_url"`
-	RedisConfig       RedisConfig      `json:"redis_config"`
-	ServerConfig      HttpServerConfig `json:"server_config"`
+	BackendURL        string                `json:"backend_url"`
+	JWTSecret         string                `json:"jwt_secret"`
+	DefaultlimitCount int64                 `json:"default_limit_count"` // Sensible, global default limit - unless over-ridden
+	DefaultPeriod     time.Duration         `json:"default_period"`      // And a default time period
+	MongoURL          string                `json:"mongo_url"`
+	RedisConfig       RedisConfig           `json:"redis_config"`
+	ServerConfig      HttpServerConfig      `json:"server_config"`
+	LimitingAlgorithm ratelimiter.Algorithm `json:"algorithm"`
 }
 
 // HTTP Listening Server config
@@ -73,6 +73,7 @@ func Load(filename string) (*Config, error) {
 		DefaultlimitCount: getInt64("default_limit_count", 100, jsonData),
 		DefaultPeriod:     getDuration("default_period", time.Hour, jsonData),
 		MongoURL:          getStringVal("mongo_url", "mongodb://localhost:27017", jsonData),
+		LimitingAlgorithm: ratelimiter.Algorithm(getStringVal("algorithm", "allow_all", jsonData)),
 		RedisConfig: RedisConfig{
 			getStringVal("redis_url", "localhost:6379", jsonData),
 			getStringVal("redis_username", "", jsonData),
