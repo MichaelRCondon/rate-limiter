@@ -3,6 +3,7 @@
   "default_limit_count": 100,
   "default_period": "1h",
   "mongo_url": "mongodb://username:password@localhost:27017/ratelimiter",
+  "algorithm": "bucketed_sliding_window",
   "redis_config": {
     "redis_url": "localhost:6379", 
     "redis_db": 0,

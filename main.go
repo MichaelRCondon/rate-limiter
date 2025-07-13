@@ -220,7 +220,7 @@ func (prox *RateLimitingProxy) handleRequest(wtr http.ResponseWriter, req *http.
 	// Call the rate limiter
 	//		if allowed - forward
 	//		if not, return 429
-	ctx, cancel := context.WithTimeout(req.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(req.Context(), 600*time.Second)
 	defer cancel()
 
 	result, err := prox.rateLimiter.CheckLimit(ctx, accountId, req.URL.Path)
