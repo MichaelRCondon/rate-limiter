@@ -31,7 +31,7 @@ type Config struct {
 	DefaultlimitCount int64            `json:"default_limit_count"` // Sensible, global default limit - unless over-ridden
 	DefaultPeriod     time.Duration    `json:"default_period"`      // And a default time period
 	MongoURL          string           `json:"mongo_url"`
-	RedisURL          string           `json:"redis_url"`
+	RedisConfig       RedisConfig      `json:"redis_config"`
 	ServerConfig      HttpServerConfig `json:"server_config"`
 }
 
@@ -41,6 +41,13 @@ type HttpServerConfig struct {
 	ReadTimeout  time.Duration `json:"read_timeout"`
 	WriteTimeout time.Duration `json:"write_timeout"`
 	IdleTimeout  time.Duration `json:"idle_timeout"`
+}
+
+type RedisConfig struct {
+	URL      string `json:"redis_url"`
+	Username string `json:"redis_username"` // Must prefix, or it gets confused w/ system username
+	Password string `json:"redis_password"`
+	DB       int    `json:"db"`
 }
 
 // Load reads configuration from a file
@@ -66,7 +73,12 @@ func Load(filename string) (*Config, error) {
 		DefaultlimitCount: getInt64("default_limit_count", 100, jsonData),
 		DefaultPeriod:     getDuration("default_period", time.Hour, jsonData),
 		MongoURL:          getStringVal("mongo_url", "mongodb://localhost:27017", jsonData),
-		RedisURL:          getStringVal("redis_url", "redis://localhost:6379", jsonData),
+		RedisConfig: RedisConfig{
+			getStringVal("redis_url", "localhost:6379", jsonData),
+			getStringVal("redis_username", "", jsonData),
+			getStringVal("redis_password", "test1234", jsonData),
+			getInt("db", 0, jsonData),
+		},
 		ServerConfig: HttpServerConfig{
 			Port:         getInt("port", 8080, jsonData),
 			ReadTimeout:  getDuration("read_timeout", 10*time.Second, jsonData),
@@ -83,32 +95,32 @@ func (c *Config) Validate() error {
 	var errBuilder strings.Builder
 	hasErrs := false
 	if strings.TrimSpace(c.JWTSecret) == "" {
-		errBuilder.WriteString("JWT secret cannot be empty\n")
+		errBuilder.WriteString("\t\tJWT secret cannot be empty\n")
 		hasErrs = true
 	}
 
 	if len(c.JWTSecret) < 32 {
-		errBuilder.WriteString("JWT is invalid\n")
+		errBuilder.WriteString("\t\tJWT is invalid\n")
 		hasErrs = true
 	}
 
 	if c.ServerConfig.Port < 0 || c.ServerConfig.Port > 65535 {
-		errBuilder.WriteString("Server port is invalid")
+		errBuilder.WriteString("\t\tServer port is invalid")
 		hasErrs = true
 	}
 
 	if strings.TrimSpace(c.MongoURL) == "" {
-		errBuilder.WriteString("MongoURL missing")
+		errBuilder.WriteString("\t\tMongoURL missing")
 		hasErrs = true
 	}
 
-	if strings.TrimSpace(c.RedisURL) == "" {
-		errBuilder.WriteString("RedisURL missing")
+	if strings.TrimSpace(c.RedisConfig.URL) == "" {
+		errBuilder.WriteString("\t\tRedis URL missing")
 		hasErrs = true
 	}
 
 	if strings.TrimSpace(c.BackendURL) == "" {
-		errBuilder.WriteString("BackendURL missing")
+		errBuilder.WriteString("\t\tBackendURL missing")
 		hasErrs = true
 	}
 	// TODO
@@ -118,7 +130,7 @@ func (c *Config) Validate() error {
 	// Actually validate the default timeouts
 
 	if hasErrs {
-		return fmt.Errorf("Missing required configuration, or Invalid config supplied:\n%s", errBuilder.String())
+		return fmt.Errorf("missing required configuration, or Invalid config supplied:\n%s", errBuilder.String())
 	}
 	return nil // Yay no errors
 }
@@ -250,7 +262,7 @@ func GetStructFields(structValue interface{}) ([]FieldInfo, error) {
 
 	// If it's not a struct, err out - this is *probably* fatal
 	if structType.Kind() != reflect.Struct {
-		return nil, fmt.Errorf("Invalid struct %s passed for reflective loading", structType.Kind())
+		return nil, fmt.Errorf("invalid struct %s passed for reflective loading", structType.Kind())
 	}
 
 	for i := 0; i < structType.NumField(); i++ {

@@ -30,10 +30,3 @@ type RateLimitRequest struct {
 	Limit       int64         `json:"limit"`
 	Period      time.Duration `json:"period"`
 }
-
-// RateLimitResult represents the result of a rate limit check
-type RateLimitResult struct {
-	Allowed   bool      `json:"allowed"` // This is way slicker than "@json" annotations
-	Remaining int64     `json:"remaining"`
-	ResetTime time.Time `json:"time"`
-}

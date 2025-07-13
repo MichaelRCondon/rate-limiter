@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: rate-limiter-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    env_file:
+      - ../.env  # Points to .env in parent directory
+    environment:
+      - redis_password=${redis_password}
+    command: redis-server --appendonly yes --appendfsync everysec --requirepass ${redis_password}
+    volumes:
+      # Persist Redis data
+      - redis_data:/data
+      # Optional: Custom Redis config
+      # - ./redis.conf:/usr/local/etc/redis/redis.conf
+    networks:
+      - rate-limiter-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${redis_password}", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # Optional: Redis Commander (Web UI for Redis)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: redis-commander
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    env_file:
+      - ../.env  # Points to .env in parent directory
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+      - redis_password=${redis_password}
+    networks:
+      - rate-limiter-network
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis_data:
+    driver: local
+
+networks:
+  rate-limiter-network:
+    driver: bridge

@@ -1,11 +1,24 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"rate-limiter/config"
+	"time"
+
+	"github.com/joho/godotenv"
+	"github.com/redis/go-redis/v9"
 )
+
+func init() {
+	// Load .env file if it exists
+	if err := godotenv.Load(); err != nil {
+		// Don't fail if .env doesn't exist (production might use real env vars)
+		log.Println("No .env file found, using system environment variables")
+	}
+}
 
 // Application-wide logger
 var (
@@ -25,11 +38,10 @@ func main() {
 	// Step 2: Print config summary for debugging
 	printConfigSummary(cfg)
 
-	// Step 3: Initialize database connections (future)
-	// err = initializeStorage(cfg)
-	// if err != nil {
-	//     ErrorLogger.Fatal("Failed to initialize storage:", err)
-	// }
+	err = initializeStorage(cfg)
+	if err != nil {
+		ErrorLogger.Fatal(err)
+	}
 
 	// Step 4: Start HTTP server (future)
 	// err = startServer(cfg)
@@ -49,7 +61,7 @@ func loadConfig() (*config.Config, error) {
 
 	cfg, err := config.Load("")
 	if err != nil {
-		return nil, fmt.Errorf("Failed to load config: %w", err)
+		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
 	InfoLogger.Println("Configuration loaded and validated successfully")
 	return cfg, nil
@@ -65,7 +77,7 @@ func printConfigSummary(cfg *config.Config) {
 	InfoLogger.Printf("Default Rate Limit: %d requests per %s",
 		cfg.DefaultlimitCount, cfg.DefaultPeriod)
 	InfoLogger.Printf("MongoDB URL: %s", sanitizeURL(cfg.MongoURL))
-	InfoLogger.Printf("Redis URL: %s", sanitizeURL(cfg.RedisURL))
+	InfoLogger.Printf("Redis URL: %s", sanitizeURL(cfg.RedisConfig.URL))
 
 	// Print server timeouts
 	InfoLogger.Printf("Server Timeouts - Read: %s, Write: %s, Idle: %s",
@@ -90,13 +102,30 @@ func initializeStorage(cfg *config.Config) error {
 	// if err != nil {
 	//     return fmt.Errorf("failed to connect to MongoDB: %w", err)
 	// }
+	var redisClient *redis.Client
 
-	// TODO: Initialize Redis connection
-	// redisClient := redis.NewClient(&redis.Options{
-	//     Addr: cfg.RedisURL,
-	// })
+	if cfg.RedisConfig.Username != "" {
+		redisClient = redis.NewClient(&redis.Options{
+			Addr:     cfg.RedisConfig.URL,
+			Password: cfg.RedisConfig.Password,
+			DB:       cfg.RedisConfig.DB,
+			Username: cfg.RedisConfig.Username,
+		})
+	} else {
+		redisClient = redis.NewClient(&redis.Options{
+			Addr:     cfg.RedisConfig.URL,
+			Password: cfg.RedisConfig.Password,
+			DB:       cfg.RedisConfig.DB,
+		})
+	}
 
-	// TODO: Test connections with ping
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := redisClient.Ping(ctx).Result()
+	if err != nil {
+		return fmt.Errorf("Unable to reach Redis service at %s : %s", sanitizeURL(cfg.RedisConfig.URL), err)
+	}
 
 	InfoLogger.Println("Storage connections initialized successfully")
 	return nil
@@ -104,7 +133,7 @@ func initializeStorage(cfg *config.Config) error {
 
 // startServer starts the HTTP proxy server
 func startServer(cfg *config.Config) error {
-	InfoLogger.Printf("Starting HTTP server on port %s...", cfg.ServerConfig.Port)
+	InfoLogger.Printf("Starting HTTP server on port %d...", cfg.ServerConfig.Port)
 
 	// TODO: Set up HTTP handlers
 	// TODO: Configure server with timeouts from config
