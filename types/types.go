@@ -30,3 +30,12 @@ type RateLimitRequest struct {
 	Limit       int64         `json:"limit"`
 	Period      time.Duration `json:"period"`
 }
+
+// RateLimitResult represents the result of a rate limit check
+type RateLimitResult struct {
+	Allowed    bool          // Proceed or not
+	Limit      int64         // configured cap
+	Remaining  int64         // remaining in-window for current user
+	ResetTime  time.Time     // Window expiration time (not always useful - sliding window?)
+	RetryAfter time.Duration // GO AWAY until...`
+}

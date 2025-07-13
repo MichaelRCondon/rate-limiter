@@ -4,13 +4,25 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"rate-limiter/config"
+	"rate-limiter/ratelimiter"
+	"strconv"
 	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
 )
+
+// Structs
+type Proxy struct {
+	rateLimiter ratelimiter.RateLimiter
+	config      *config.Config
+	backendURL  string
+}
+
+// Impl
 
 func init() {
 	// Load .env file if it exists
@@ -29,25 +41,22 @@ var (
 func main() {
 	InfoLogger.Println("Starting rate-limiter proxy...")
 
-	// Step 1: Load and validate configuration
 	cfg, err := loadConfig()
 	if err != nil {
 		ErrorLogger.Fatal("Failed to load configuration:", err)
 	}
 
-	// Step 2: Print config summary for debugging
 	printConfigSummary(cfg)
 
-	err = initializeStorage(cfg)
+	client, err := initializeStorage(cfg)
 	if err != nil {
 		ErrorLogger.Fatal(err)
 	}
 
-	// Step 4: Start HTTP server (future)
-	// err = startServer(cfg)
-	// if err != nil {
-	//     ErrorLogger.Fatal("Failed to start server:", err)
-	// }
+	err = startServer(cfg, client)
+	if err != nil {
+		ErrorLogger.Fatal("Unable to start server", err)
+	}
 
 	InfoLogger.Println("Rate-limiter proxy started successfully")
 
@@ -71,7 +80,6 @@ func loadConfig() (*config.Config, error) {
 func printConfigSummary(cfg *config.Config) {
 	InfoLogger.Println("#### Configuration Summary ####")
 
-	// Print key config values (but NOT secrets like JWT)
 	InfoLogger.Printf("Backend URL: %s", cfg.BackendURL)
 	InfoLogger.Printf("Server Port: %d", cfg.ServerConfig.Port)
 	InfoLogger.Printf("Default Rate Limit: %d requests per %s",
@@ -94,14 +102,9 @@ func printConfigSummary(cfg *config.Config) {
 }
 
 // initializeStorage sets up MongoDB and Redis connections
-func initializeStorage(cfg *config.Config) error {
+func initializeStorage(cfg *config.Config) (*redis.Client, error) {
 	InfoLogger.Println("Initializing storage connections...")
 
-	// TODO: Initialize MongoDB connection
-	// mongoClient, err := mongo.Connect(ctx, options.Client().ApplyURI(cfg.MongoURL))
-	// if err != nil {
-	//     return fmt.Errorf("failed to connect to MongoDB: %w", err)
-	// }
 	var redisClient *redis.Client
 
 	if cfg.RedisConfig.Username != "" {
@@ -124,22 +127,46 @@ func initializeStorage(cfg *config.Config) error {
 
 	_, err := redisClient.Ping(ctx).Result()
 	if err != nil {
-		return fmt.Errorf("Unable to reach Redis service at %s : %s", sanitizeURL(cfg.RedisConfig.URL), err)
+		return nil, fmt.Errorf("Unable to reach Redis service at %s : %s", sanitizeURL(cfg.RedisConfig.URL), err)
 	}
 
 	InfoLogger.Println("Storage connections initialized successfully")
-	return nil
+	return redisClient, nil
 }
 
 // startServer starts the HTTP proxy server
-func startServer(cfg *config.Config) error {
+func startServer(cfg *config.Config, redClient *redis.Client) error {
 	InfoLogger.Printf("Starting HTTP server on port %d...", cfg.ServerConfig.Port)
+	rateLimiter, err := ratelimiter.NewRateLimiter("allow_all", redClient)
 
-	// TODO: Set up HTTP handlers
-	// TODO: Configure server with timeouts from config
-	// TODO: Start listening
+	if err != nil {
+		ErrorLogger.Fatalf("Unable to load RateLimiter", err)
+	}
 
-	return nil
+	proxy := &Proxy{
+		rateLimiter: rateLimiter,
+		config:      cfg,
+		backendURL:  cfg.BackendURL,
+	}
+
+	server := &http.Server{
+		Addr:         ":" + strconv.Itoa(cfg.ServerConfig.Port),
+		Handler:      http.HandlerFunc(proxy.handleRequest),
+		ReadTimeout:  cfg.ServerConfig.ReadTimeout,
+		IdleTimeout:  cfg.ServerConfig.IdleTimeout,
+		WriteTimeout: cfg.ServerConfig.WriteTimeout,
+	}
+
+	InfoLogger.Printf("HTTP server listening on port %d", cfg.ServerConfig.Port)
+	return server.ListenAndServe() // This blocks until server stops
+}
+
+func (prox *Proxy) handleRequest(wtr http.ResponseWriter, req *http.Request) {
+	// Pull/check JWT, grab acctid
+	// Call the rate limiter
+	//		if allowed - forward
+	//		if not, return 429
+
 }
 
 // setupGracefulShutdown handles SIGINT/SIGTERM for clean shutdown

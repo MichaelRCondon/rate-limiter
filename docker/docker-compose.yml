@@ -1,14 +1,33 @@
 version: '3.8'
-
 services:
+  rate-limiter:
+    build:
+      context: ..  # Points to parent directory where rate-limiter code is
+      dockerfile: Dockerfile
+    container_name: rate-limiter
+    restart: unless-stopped
+    ports:
+      - "8080:8080"  # Rate limiter on port 8080
+    environment:
+      - redis_url=redis:6379
+      - redis_username=
+      - redis_password=${redis_password}
+      - db=0
+      - backend_url=http://hello-api:8080
+    networks:
+      - rate-limiter-network
+    depends_on:
+      redis:
+        condition: service_healthy
+      hello-api:
+        condition: service_healthy
+
   redis:
     image: redis:7-alpine
     container_name: rate-limiter-redis
     restart: unless-stopped
     ports:
       - "6379:6379"
-    env_file:
-      - ../.env  # Points to .env in parent directory
     environment:
       - redis_password=${redis_password}
     command: redis-server --appendonly yes --appendfsync everysec --requirepass ${redis_password}
@@ -26,6 +45,23 @@ services:
       retries: 5
       start_period: 30s
 
+  hello-api:
+    build:
+      context: ../DemoAPI  # Path to your Go API directory
+      dockerfile: Dockerfile
+    container_name: hello-api
+    restart: unless-stopped
+    ports:
+      - "9080:8080"  # Expose for direct testing (optional)
+    networks:
+      - rate-limiter-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/hello"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+
   # Optional: Redis Commander (Web UI for Redis)
   redis-commander:
     image: rediscommander/redis-commander:latest
@@ -33,8 +69,6 @@ services:
     restart: unless-stopped
     ports:
       - "8081:8081"
-    env_file:
-      - ../.env  # Points to .env in parent directory
     environment:
       - REDIS_HOSTS=local:redis:6379
       - redis_password=${redis_password}

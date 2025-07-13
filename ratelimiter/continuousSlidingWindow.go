@@ -18,19 +18,19 @@ var (
 
 // Continuous sliding window, using Redis sorted sets
 type ContinuousSlidingWindowLimiter struct {
-	redisClient *redis.Client
-
+	redisClient             *redis.Client
 	checkAndIncrementScript *redis.Script
 }
 
 // NewContinuousSlidingWindowLimiter creates a new continuous sliding window rate limiter
-func NewContinuousSlidingWindowLimiter(redisClient *redis.Client) *ContinuousSlidingWindowLimiter {
+func NewContinuousSlidingWindowLimiter(redisClient *redis.Client) RateLimiter {
 	// TODO: Initialize the limiter and compile Lua script
+
 	return nil
 }
 
 // CheckLimit implements the RateLimiter interface
-func (c *ContinuousSlidingWindowLimiter) CheckLimit(ctx context.Context, accountID string, path string) (*types.LimitResult, error) {
+func (c *ContinuousSlidingWindowLimiter) CheckLimit(ctx context.Context, accountID string, path string) (*types.RateLimitResult, error) {
 	// TODO: Main algorithm implementation
 	// 1. Get limit configuration for this account+path
 	// 2. Calculate window start time (now - window_duration)
@@ -47,11 +47,11 @@ func (c *ContinuousSlidingWindowLimiter) Close() error {
 }
 
 // getLimitConfig retrieves the rate limit configuration for a specific account and path
-func (c *ContinuousSlidingWindowLimiter) getLimitConfig(ctx context.Context, accountID string, path string) (*types.LimitConfig, error) {
+/*func (c *ContinuousSlidingWindowLimiter) getLimitConfig(ctx context.Context, accountID string, path string) (*types.LimitConfig, error) {
 	// TODO: Get config from Redis with key format: "config:account123:/api/users"
 	// Return default config if not found
 	return nil, nil
-}
+}*/
 
 // getRequestsKey generates the Redis sorted set key for storing request timestamps
 func (c *ContinuousSlidingWindowLimiter) getRequestsKey(accountID string, path string) string {
