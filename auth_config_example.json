@@ -1,0 +1,46 @@
+{
+  "_comment": "TODO: When implementing authentication, add this auth_config section to application_config.json",
+  
+  "auth_config": {
+    "public_paths": [
+      "/health",
+      "/metrics", 
+      "/favicon.ico",
+      "/robots.txt"
+    ],
+    "admin_paths": [
+      "/admin/*",
+      "/internal/*",
+      "/debug/*"
+    ]
+  },
+  
+  "_explanation": {
+    "public_paths": "These paths don't require any authentication - anyone can access them",
+    "admin_paths": "These paths require admin-level JWT with 'admin' role claim",
+    "unlisted_paths": "All other paths require standard JWT authentication with valid account_id"
+  },
+  
+  "_jwt_example": {
+    "header": {
+      "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+    },
+    "payload": {
+      "sub": "user123",
+      "account_id": 12345,
+      "role": "user",
+      "exp": 1234567890,
+      "iat": 1234567800
+    }
+  },
+  
+  "_jwt_admin_example": {
+    "payload": {
+      "sub": "admin456", 
+      "account_id": 99999,
+      "role": "admin",
+      "exp": 1234567890,
+      "iat": 1234567800
+    }
+  }
+}
