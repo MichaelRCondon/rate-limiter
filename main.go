@@ -11,27 +11,50 @@ import (
 	"rate-limiter/config"
 	"rate-limiter/ratelimiter"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
 )
 
 // Structs
+
+type AuthLevel int
+
+const (
+	AuthNone AuthLevel = iota // Ok, iota is slick for sequential generation
+	AuthRequired
+	AdminRequired
+)
+
+type JWTClaims struct {
+	AccountID            int64  `json:"account_id"` // Account ID for rate limiting
+	UserID               string `json:"sub"`        // Subject - user identifier
+	Role                 string `json:"role"`       // User role (e.g., "admin", "user")
+	jwt.RegisteredClaims        // Standard JWT claims (exp, iat, etc.)
+}
+
 type RateLimitingProxy struct {
-	rateLimiter  ratelimiter.RateLimiter
-	config       *config.Config
-	backendURL   string
-	reverseProxy httputil.ReverseProxy
+	rateLimiter           ratelimiter.RateLimiter
+	config                *config.Config
+	backendURL            string
+	backendHealthcheckURL string
+	reverseProxy          httputil.ReverseProxy
 }
 
 // Impl
 
 func init() {
+	log.Println("DEBUG: init() function called")
+
 	// Load .env file if it exists
-	if err := godotenv.Load(); err != nil {
-		// Don't fail if .env doesn't exist (production might use real env vars)
+	if err := godotenv.Load("./docker/.env"); err != nil {
+		log.Printf("DEBUG: godotenv.Load failed: %v", err)
 		log.Println("No .env file found, using system environment variables")
+	} else {
+		log.Println("DEBUG: Successfully loaded .env file")
 	}
 }
 
@@ -82,23 +105,23 @@ func loadConfig() (*config.Config, error) {
 // printConfigSummary prints a summary of loaded config for debugging
 func printConfigSummary(cfg *config.Config) {
 	InfoLogger.Println("#### Configuration Summary ####")
-
-	InfoLogger.Printf("Backend URL: %s", cfg.BackendURL)
-	InfoLogger.Printf("Server Port: %d", cfg.ServerConfig.Port)
-	InfoLogger.Printf("Default Rate Limit: %d requests per %s",
+	InfoLogger.Printf("\t\tBackend URL: %s", cfg.BackendConfig.URL)
+	InfoLogger.Printf("\t\tServer Port: %d", cfg.ServerConfig.Port)
+	InfoLogger.Printf("\t\tDefault Rate Limit: %d requests per %s",
 		cfg.DefaultlimitCount, cfg.DefaultPeriod)
-	InfoLogger.Printf("MongoDB URL: %s", sanitizeURL(cfg.MongoURL))
-	InfoLogger.Printf("Redis URL: %s", sanitizeURL(cfg.RedisConfig.URL))
+	InfoLogger.Printf("\t\tMongoDB URL: %s", sanitizeURL(cfg.MongoURL))
+	InfoLogger.Printf("\t\tRedis URL: %s", sanitizeURL(cfg.RedisConfig.URL))
+	InfoLogger.Printf("\t\tRatelimiting Algorithm: %s", cfg.LimitingAlgorithm)
 
 	// Print server timeouts
-	InfoLogger.Printf("Server Timeouts - Read: %s, Write: %s, Idle: %s",
+	InfoLogger.Printf("\t\tServer Timeouts - Read: %s, Write: %s, Idle: %s",
 		cfg.ServerConfig.ReadTimeout, cfg.ServerConfig.WriteTimeout, cfg.ServerConfig.IdleTimeout)
 
 	// Print JWT info (but not the actual secret)
 	if cfg.JWTSecret != "" {
-		InfoLogger.Printf("JWT Secret: [CONFIGURED - %d characters]", len(cfg.JWTSecret))
+		InfoLogger.Printf("\t\tJWT Secret: [CONFIGURED - %d characters]", len(cfg.JWTSecret))
 	} else {
-		InfoLogger.Printf("JWT Secret: [NOT CONFIGURED]")
+		InfoLogger.Printf("\t\tJWT Secret: [NOT CONFIGURED]")
 	}
 
 	InfoLogger.Println("#### End Configuration Summary ####")
@@ -140,9 +163,9 @@ func initializeStorage(cfg *config.Config) (*redis.Client, error) {
 func setupProxy(cfg *config.Config, rateLimiter ratelimiter.RateLimiter) (*RateLimitingProxy, error) {
 	// Set up the backend URL
 	// -- TODO FUTURE -- Extend this with a ChooseBackend function based on inbound host
-	backendURL, err := url.Parse(cfg.BackendURL)
+	backendURL, err := url.Parse(cfg.BackendConfig.URL)
 	if err != nil {
-		return nil, fmt.Errorf("Invalid backend URL %s: %v", cfg.BackendURL, err)
+		return nil, fmt.Errorf("Invalid backend URL %s: %v", cfg.BackendConfig.URL, err)
 	}
 
 	revProx := httputil.NewSingleHostReverseProxy(backendURL)
@@ -153,10 +176,11 @@ func setupProxy(cfg *config.Config, rateLimiter ratelimiter.RateLimiter) (*RateL
 	}
 
 	proxy := &RateLimitingProxy{
-		rateLimiter:  rateLimiter,
-		config:       cfg,
-		backendURL:   cfg.BackendURL,
-		reverseProxy: *revProx,
+		rateLimiter:           rateLimiter,
+		config:                cfg,
+		backendURL:            cfg.BackendConfig.URL,
+		backendHealthcheckURL: cfg.BackendConfig.HealthcheckURL,
+		reverseProxy:          *revProx,
 	}
 	return proxy, nil
 }
@@ -192,8 +216,7 @@ func startServer(cfg *config.Config, redClient *redis.Client) error {
 }
 
 func (prox *RateLimitingProxy) handleHealth(wtr http.ResponseWriter, req *http.Request) {
-	// FUTURE TODO - the back-end really should also have a healthcheck
-	resp, err := http.Get(prox.backendURL + "/hello")
+	resp, err := http.Get(prox.backendHealthcheckURL)
 	if err != nil {
 		ErrorLogger.Printf("Backend health check failed: %v", err)
 		http.Error(wtr, "Backend unhealthy", http.StatusServiceUnavailable)
@@ -213,10 +236,42 @@ func (prox *RateLimitingProxy) handleHealth(wtr http.ResponseWriter, req *http.R
 }
 
 func (prox *RateLimitingProxy) handleRequest(wtr http.ResponseWriter, req *http.Request) {
-	// Pull/check JWT, grab acctid
-	var accountId int64
-	accountId = -1 // For testing
+	// Check configured AuthLevel for the incoming request path
+	// Check JWT for appropriate claim, and pull out acctid
 
+	authLevel := prox.determineAuthLevel(req.URL.Path)
+
+	// TODO: STEP 2 - Handle authentication based on the determined level
+	var accountId int64
+	switch authLevel {
+	case AuthNone:
+		// Public path - no authentication required - This will be the same as the whitelist path - not limited either
+		// Things like healthcheck
+		accountId = -1
+	case AuthRequired:
+		// Standard authentication required
+		var err error
+		accountId, err = prox.validateJWT(req)
+		if err != nil {
+			http.Error(wtr, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+	case AdminRequired:
+		// Admin authentication required -
+		// Things like reset, add config, etc
+		var err error
+		accountId, err = prox.validateAdminJWT(req)
+		if err != nil {
+			http.Error(wtr, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
+
+	prox.processRequest(wtr, req, accountId)
+}
+
+// TODO: STEP 4 - Move the existing rate limiting and proxy logic into this function
+func (prox *RateLimitingProxy) processRequest(wtr http.ResponseWriter, req *http.Request, accountId int64) {
 	// Call the rate limiter
 	//		if allowed - forward
 	//		if not, return 429
@@ -266,13 +321,134 @@ func (prox *RateLimitingProxy) handleRequest(wtr http.ResponseWriter, req *http.
 	prox.reverseProxy.ServeHTTP(wtr, req)
 }
 
+func (prox *RateLimitingProxy) determineAuthLevel(path string) AuthLevel {
+	// First check if matches any admin paths - this over-rides everything, even if a path is configured for both
+	//
+	// Next, check if path matches any public paths (no auth needed)
+
+	for _, adminPath := range prox.config.AuthConfig.AdminPaths {
+		if prox.pathMatches(path, adminPath) {
+			return AdminRequired
+		}
+	}
+
+	for _, publicPath := range prox.config.AuthConfig.PublicPaths {
+		if prox.pathMatches(path, publicPath) {
+			return AuthNone
+		}
+
+	}
+	return AuthRequired
+}
+
+func (prox *RateLimitingProxy) pathMatches(requestPath, configPath string) bool {
+	// Exact match
+	if requestPath == configPath {
+		return true
+	}
+
+	// Wildcard match (e.g., "/admin/*" matches "/admin/users")
+	if strings.HasSuffix(configPath, "/*") {
+		prefix := strings.TrimSuffix(configPath, "/*")
+		return strings.HasPrefix(requestPath, prefix)
+	}
+
+	return false
+}
+
+func (prox *RateLimitingProxy) getJWTFromHeader(req *http.Request) (string, error) {
+	authHeader := req.Header.Get("Authorization")
+	if authHeader == "" {
+		return "", fmt.Errorf("missing required Authorization header")
+	}
+
+	// Check for "Bearer " prefix
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		return "", fmt.Errorf("invalid Authorization header format")
+	}
+
+	// Extract token (remove "Bearer " prefix)
+	token := strings.TrimPrefix(authHeader, "Bearer ")
+	if token == "" {
+		return "", fmt.Errorf("missing required JWT")
+	}
+
+	return token, nil
+}
+
+func (prox *RateLimitingProxy) parseJWT(tokenString string) (*JWTClaims, error) {
+	// Parse token with claims
+	token, err := jwt.ParseWithClaims(tokenString, &JWTClaims{}, func(token *jwt.Token) (interface{}, error) {
+		// Verify signing method
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(prox.config.JWTSecret), nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse JWT: %w", err)
+	}
+
+	// Pull out the claims
+	if claims, ok := token.Claims.(*JWTClaims); ok && token.Valid {
+		return claims, nil
+	}
+
+	return nil, fmt.Errorf("invalid JWT claims")
+}
+
+func (prox *RateLimitingProxy) validateJWT(req *http.Request) (int64, error) {
+	// Extract token from header
+	tokenString, err := prox.getJWTFromHeader(req)
+	if err != nil {
+		return 0, err
+	}
+
+	// Parse and validate token
+	claims, err := prox.parseJWT(tokenString)
+	if err != nil {
+		return 0, err
+	}
+
+	// Validate account ID is present
+	if claims.AccountID <= 0 {
+		return 0, fmt.Errorf("invalid account ID in JWT")
+	}
+
+	return claims.AccountID, nil
+}
+
+func (prox *RateLimitingProxy) validateAdminJWT(req *http.Request) (int64, error) {
+	// Extract token from header
+	tokenString, err := prox.getJWTFromHeader(req)
+	if err != nil {
+		return 0, err
+	}
+
+	// Parse and validate token
+	claims, err := prox.parseJWT(tokenString)
+	if err != nil {
+		return 0, err
+	}
+
+	// Validate account ID is present
+	if claims.AccountID <= 0 {
+		return 0, fmt.Errorf("invalid account ID in JWT")
+	}
+
+	// Check admin role
+	if claims.Role != "admin" {
+		return 0, fmt.Errorf("insufficient privileges: admin role required")
+	}
+
+	return claims.AccountID, nil
+}
+
 // setupGracefulShutdown handles SIGINT/SIGTERM for clean shutdown
 func setupGracefulShutdown() {
 	InfoLogger.Println("Setting up graceful shutdown...")
 
-	// TODO: Set up signal handling
-	// TODO: Gracefully close database connections
-	// TODO: Gracefully shutdown HTTP server
 }
 
 // sanitizeURL removes credentials from URLs for safe logging

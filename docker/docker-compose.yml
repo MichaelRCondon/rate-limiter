@@ -14,6 +14,7 @@ services:
       - redis_password=${redis_password}
       - db=0
       - backend_url=http://hello-api:8080
+      - JWT_SECRET=${JWT_SECRET}
     networks:
       - rate-limiter-network
     depends_on:
@@ -61,6 +62,21 @@ services:
       timeout: 10s
       retries: 5
       start_period: 10s
+
+  # JWT Token Generator Service
+  jwt-signer:
+    build:
+      context: ../tools/jwt-signer
+      dockerfile: Dockerfile
+    container_name: jwt-signer
+    environment:
+      - JWT_SECRET=${JWT_SECRET}
+    networks:
+      - rate-limiter-network
+    profiles:
+      - tools
+    # This service is meant to be run on-demand via docker-compose run
+    command: ["-list"]
 
   # Optional: Redis Commander (Web UI for Redis)
   redis-commander:

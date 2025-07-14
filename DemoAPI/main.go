@@ -11,11 +11,16 @@ func helloHandler(resp http.ResponseWriter, req *http.Request) {
 	if req.URL.Query().Has("name") {
 		name = req.URL.Query().Get("name")
 	}
-	fmt.Fprintf(resp, hello.SayHello(name))
+	fmt.Fprint(resp, hello.SayHello(name))
+}
+
+func healthcheckHandler(wtr http.ResponseWriter, req *http.Request) {
+	fmt.Fprintf(wtr, "{\"Health\": \"OK\"}")
 }
 
 func main() {
 	http.HandleFunc("/hello", helloHandler)
+	http.HandleFunc("/health", healthcheckHandler)
 	fmt.Println("Startup on :8080")
 
 	err := http.ListenAndServe(":8080", nil)

@@ -25,7 +25,6 @@ var (
 
 // Container for the full config
 type Config struct {
-	BackendURL        string                `json:"backend_url"`
 	JWTSecret         string                `json:"jwt_secret"`
 	DefaultlimitCount int64                 `json:"default_limit_count"` // Sensible, global default limit - unless over-ridden
 	DefaultPeriod     time.Duration         `json:"default_period"`      // And a default time period
@@ -33,6 +32,13 @@ type Config struct {
 	RedisConfig       RedisConfig           `json:"redis_config"`
 	ServerConfig      HttpServerConfig      `json:"server_config"`
 	LimitingAlgorithm ratelimiter.Algorithm `json:"algorithm"`
+	AuthConfig        AuthConfig            `json:"auth_config"`
+	BackendConfig     BackendConfig         `json:"backend_config"`
+}
+
+type AuthConfig struct {
+	PublicPaths []string `json:"public_paths"`
+	AdminPaths  []string `json:"admin_paths"`
 }
 
 // HTTP Listening Server config
@@ -48,6 +54,11 @@ type RedisConfig struct {
 	Username string `json:"redis_username"` // Must prefix, or it gets confused w/ system username
 	Password string `json:"redis_password"`
 	DB       int    `json:"db"`
+}
+
+type BackendConfig struct { // Future extension - this can be allowed to load multiple back-ends
+	URL            string `json:"backend_host"`
+	HealthcheckURL string `json:"backend_healthcheck_url"`
 }
 
 // Load reads configuration from a file
@@ -66,25 +77,32 @@ func Load(filename string) (*Config, error) {
 		InfoLogger.Printf("Unable to load JSON config file at %s", config_file_path)
 	}
 
-	// Acutally load things
+	// Actually load things
 	config := &Config{
-		BackendURL:        getStringVal("backend_url", "http://localhost:8080", jsonData),
 		JWTSecret:         getStringVal("jwt_secret", "your-secret-key", jsonData),
 		DefaultlimitCount: getInt64("default_limit_count", 100, jsonData),
 		DefaultPeriod:     getDuration("default_period", time.Hour, jsonData),
 		MongoURL:          getStringVal("mongo_url", "mongodb://localhost:27017", jsonData),
 		LimitingAlgorithm: ratelimiter.Algorithm(getStringVal("algorithm", "allow_all", jsonData)),
 		RedisConfig: RedisConfig{
-			getStringVal("redis_url", "localhost:6379", jsonData),
-			getStringVal("redis_username", "", jsonData),
-			getStringVal("redis_password", "test1234", jsonData),
-			getInt("db", 0, jsonData),
+			URL:      getNestedStringVal(jsonData, "redis_config", "redis_url", "localhost:6379"),
+			Username: getNestedStringVal(jsonData, "redis_config", "redis_username", ""),
+			Password: getNestedStringVal(jsonData, "redis_config", "redis_password", "test1234"),
+			DB:       getNestedIntVal(jsonData, "redis_config", "redis_db", 0),
 		},
 		ServerConfig: HttpServerConfig{
-			Port:         getInt("port", 8080, jsonData),
-			ReadTimeout:  getDuration("read_timeout", 10*time.Second, jsonData),
-			WriteTimeout: getDuration("write_timeout", 10*time.Second, jsonData),
-			IdleTimeout:  getDuration("idle_timeout", 60*time.Second, jsonData),
+			Port:         getNestedIntVal(jsonData, "server_config", "port", 8080),
+			ReadTimeout:  getNestedDurationVal(jsonData, "server_config", "read_timeout", 10*time.Second),
+			WriteTimeout: getNestedDurationVal(jsonData, "server_config", "write_timeout", 10*time.Second),
+			IdleTimeout:  getNestedDurationVal(jsonData, "server_config", "idle_timeout", 60*time.Second),
+		},
+		AuthConfig: AuthConfig{
+			PublicPaths: getStringSlice("public_paths", []string{"/health", "/metrics"}, jsonData),
+			AdminPaths:  getStringSlice("admin_paths", []string{"/admin/*", "/internal/*"}, jsonData),
+		},
+		BackendConfig: BackendConfig{
+			URL:            getNestedStringVal(jsonData, "backend_config", "backend_host", "http://localhost:9080"),
+			HealthcheckURL: getNestedStringVal(jsonData, "backend_config", "backend_healthcheck_url", "http://localhost:9080/health"),
 		},
 	}
 
@@ -120,8 +138,13 @@ func (c *Config) Validate() error {
 		hasErrs = true
 	}
 
-	if strings.TrimSpace(c.BackendURL) == "" {
-		errBuilder.WriteString("\t\tBackendURL missing")
+	if strings.TrimSpace(c.BackendConfig.URL) == "" {
+		errBuilder.WriteString("\t\tBackend URL missing")
+		hasErrs = true
+	}
+
+	if strings.TrimSpace(c.BackendConfig.HealthcheckURL) == "" {
+		errBuilder.WriteString("\t\tBackend Healthcheck URL missing")
 		hasErrs = true
 	}
 	// TODO
@@ -230,6 +253,63 @@ func getDuration(key string, defaultValue time.Duration, jsonData map[string]int
 	return defaultValue
 }
 
+// Helper function to safely get nested string values
+func getNestedStringVal(jsonData map[string]interface{}, parentKey, childKey, defaultVal string) string {
+	// First check environment variables using the child key
+	if envVal := os.Getenv(childKey); envVal != "" {
+		return envVal
+	}
+
+	// Then check nested JSON
+	if parent, ok := jsonData[parentKey].(map[string]interface{}); ok {
+		if val, ok := parent[childKey].(string); ok {
+			return val
+		}
+	}
+
+	return defaultVal
+}
+
+// Helper function to safely get nested int values (with env var support)
+func getNestedIntVal(jsonData map[string]interface{}, parentKey, childKey string, defaultVal int) int {
+	// First check environment variables
+	if envVal := os.Getenv(childKey); envVal != "" {
+		if parsedVal, err := strconv.Atoi(envVal); err == nil {
+			return parsedVal
+		}
+	}
+
+	// Then check nested JSON
+	if parent, ok := jsonData[parentKey].(map[string]interface{}); ok {
+		if val, ok := parent[childKey].(float64); ok { // JSON numbers are float64
+			return int(val)
+		}
+	}
+
+	return defaultVal
+}
+
+// Helper function to safely get nested duration values (with env var support)
+func getNestedDurationVal(jsonData map[string]interface{}, parentKey, childKey string, defaultVal time.Duration) time.Duration {
+	// First check environment variables
+	if envVal := os.Getenv(childKey); envVal != "" {
+		if parsed, err := time.ParseDuration(envVal); err == nil {
+			return parsed
+		}
+	}
+
+	// Then check nested JSON
+	if parent, ok := jsonData[parentKey].(map[string]interface{}); ok {
+		if val, ok := parent[childKey].(string); ok {
+			if parsed, err := time.ParseDuration(val); err == nil {
+				return parsed
+			}
+		}
+	}
+
+	return defaultVal
+}
+
 // Load the JSON config file, IF IT EXISTS
 func loadJSONConfig(filename string) (map[string]interface{}, error) {
 	data, err := os.ReadFile(filename)
@@ -268,7 +348,6 @@ func GetStructFields(structValue interface{}) ([]FieldInfo, error) {
 
 	for i := 0; i < structType.NumField(); i++ {
 		field := structType.Field(i)
-
 		// Skip private fields (lowercase names)
 		if !field.IsExported() {
 			continue
@@ -289,4 +368,36 @@ func GetStructFields(structValue interface{}) ([]FieldInfo, error) {
 		fields = append(fields, fieldInfo)
 	}
 	return fields, nil
+}
+
+func getStringSlice(key string, defaultVal []string, jsonData map[string]interface{}) []string {
+	result := getConfigVal(key, defaultVal, jsonData)
+	switch val := result.(type) {
+	case []string:
+		return val // already string-slices
+	case string:
+		// split, return slices
+		if val == "" {
+			return defaultVal
+		}
+		if strings.Contains(val, ",") {
+			return strings.Split(val, ",")
+		}
+		return []string{val} // worst case wrap and return
+	case []interface{}: // If it's not a string-type slice already
+		stringSlice := make([]string, len(val))
+		for i, v := range val {
+			if str, ok := v.(string); ok {
+				stringSlice[i] = str // Check that every item in there is a string
+			} else {
+				InfoLogger.Printf("Non-string value in %s array, using default", key)
+				return defaultVal
+			}
+			return stringSlice
+		}
+	default:
+		InfoLogger.Printf("Config %s loaded default value %v", key, defaultVal)
+		return defaultVal
+	}
+	return defaultVal
 }
